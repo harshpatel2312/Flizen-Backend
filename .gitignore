@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Other
+firebase-admin-key.json
+
+# Data files
+airports.csv
