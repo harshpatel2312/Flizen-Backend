@@ -193,4 +193,4 @@ Update `FlightService.search_flights()` in `app/services/flight_service.py` to i
 
 ## 📄 License
 
-MIT
+Apache
