@@ -1,4 +1,4 @@
-# Flizen Flight Booking Backend
+# Flizen Backend
 
 A FastAPI backend for the Flizen premium flight booking platform.
 
