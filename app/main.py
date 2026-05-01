@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
-from app.routes import airports, flights, health
+from app.routes import airports, flights, health, auth
 
 # ---------------------------------------------------------------------------
 # Parse CLI arguments before anything else so logging is configured early.
@@ -52,6 +52,7 @@ logger.debug("CORS origins: %s", settings.CORS_ORIGINS)
 app.include_router(health.router)
 app.include_router(airports.router)
 app.include_router(flights.router)
+app.include_router(auth.router)
 
 
 @app.get("/")
