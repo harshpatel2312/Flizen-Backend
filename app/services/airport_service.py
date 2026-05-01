@@ -1,8 +1,11 @@
 from app.core.firebase import get_db
+from app.core.logging import get_logger
 from app.models.airport import Airport, AirportResponse
 from typing import List
 import json
 from pathlib import Path
+
+logger = get_logger(__name__)
 
 class AirportService:
     """Service for airport operations with comprehensive airport database"""
@@ -38,7 +41,7 @@ class AirportService:
                     self._airports_list.append(airport)
                 
                 self._cache_loaded = True
-                print(f"✓ Loaded {len(self._airports_list)} airports from JSON cache")
+                logger.info("Loaded %d airports from JSON cache", len(self._airports_list))
                 return
             
             # Fallback to major airports
@@ -53,14 +56,14 @@ class AirportService:
                     self._airports_list.append(airport)
                 
                 self._cache_loaded = True
-                print(f"✓ Loaded {len(self._airports_list)} major airports from JSON")
+                logger.info("Loaded %d major airports from JSON", len(self._airports_list))
                 return
-            
-            print("⚠ No airport data files found")
+
+            logger.warning("No airport data files found")
             self._cache_loaded = True
-            
+
         except Exception as e:
-            print(f"Error loading airports: {e}")
+            logger.exception("Error loading airports: %s", e)
             self._cache_loaded = True
     
     def search_airports(self, query: str, limit: int = 10) -> List[AirportResponse]:

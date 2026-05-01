@@ -11,10 +11,15 @@ class Settings:
     FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "flizen-flight-booking")
     
     # CORS
-    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
+    CORS_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000,http://localhost:3001").split(",")]
     
     # Environment
     ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
     DEBUG = ENVIRONMENT == "development"
+    
+    # Duffel API
+    DUFFEL_ACCESS_TOKEN = os.getenv("DUFFEL_ACCESS_TOKEN", "")
+    DUFFEL_API_BASE_URL = "https://api.duffel.com"
+    DUFFEL_API_VERSION = "v2"
 
 settings = Settings()
