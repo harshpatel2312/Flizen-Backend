@@ -3,6 +3,11 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Logs (keep the directory, ignore the files)
+logs/*.log
+logs/*.log.*
+logs/
+
 # C extensions
 *.so
 
