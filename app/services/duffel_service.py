@@ -294,6 +294,8 @@ class DuffelService:
                 fare_brand_name=fare_brand_name,
                 conditions=conditions,
                 baggages=baggages,
+                total_emissions_kg=offer.get("total_emissions_kg") or None,
+                passport_required=offer.get("passenger_identity_documents_required"),
             )
 
         except Exception as e:

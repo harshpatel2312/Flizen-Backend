@@ -61,6 +61,8 @@ class DuffelFlightOffer(BaseModel):
     fare_brand_name: Optional[str] = Field(None, description="Fare brand / ticket type")
     conditions: Optional[FlightConditions] = Field(None, description="Refund / change conditions")
     baggages: List[BaggageAllowance] = Field(default_factory=list, description="Baggage allowances")
+    total_emissions_kg: Optional[str] = Field(None, description="Estimated CO2 emissions in kg for all passengers")
+    passport_required: Optional[bool] = Field(None, description="Whether identity documents (passport) are required for booking")
 
 
 class DuffelFlightSearchResponse(BaseModel):
