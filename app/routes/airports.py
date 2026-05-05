@@ -17,7 +17,7 @@ async def search_airports(q: str = Query(..., min_length=1, max_length=100)):
         return results
     except Exception as e:
         logger.error("Error searching airports for query '%s': %s", q, e)
-        raise HTTPException(status_code=500, detail=f"Error searching airports: {str(e)}")
+        raise HTTPException(status_code=500, detail="Airport search failed.")
 
 @router.get("/{iata}", response_model=AirportResponse)
 async def get_airport(iata: str):
@@ -32,4 +32,4 @@ async def get_airport(iata: str):
         raise
     except Exception as e:
         logger.error("Error fetching airport '%s': %s", iata, e)
-        raise HTTPException(status_code=500, detail=f"Error fetching airport: {str(e)}")
+        raise HTTPException(status_code=500, detail="Airport lookup failed.")

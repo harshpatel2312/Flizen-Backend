@@ -117,13 +117,13 @@ async def search_flights_duffel(
     except HTTPException:
         raise
     except ValueError as e:
-        logger.error(f"Configuration error: {str(e)}")
+        logger.error("Configuration error in flight search: %s", e)
         raise HTTPException(
             status_code=503,
             detail="Flight search service is not properly configured. Please contact support."
         )
     except Exception as e:
-        logger.error(f"Error in flight search: {str(e)}")
+        logger.error("Unexpected error in flight search: %s", e)
         raise HTTPException(
             status_code=500,
             detail="An error occurred while searching for flights."

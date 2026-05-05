@@ -1,7 +1,6 @@
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from firebase_admin import auth
-from app.core.firebase import init_firebase
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -25,7 +24,6 @@ async def verify_token(payload: TokenRequest):
     Verify a Firebase ID token received from the frontend.
     Returns the decoded user profile on success.
     """
-    init_firebase()
     try:
         decoded = auth.verify_id_token(payload.id_token)
     except auth.ExpiredIdTokenError:

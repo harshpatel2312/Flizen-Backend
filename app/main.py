@@ -6,7 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
-from app.routes import airports, flights, health, auth
+from app.routes import airports, flights, health, auth, profile
+from app.core.firebase import init_firebase
 
 # ---------------------------------------------------------------------------
 # Parse CLI arguments before anything else so logging is configured early.
@@ -49,10 +50,14 @@ app.add_middleware(
 
 logger.debug("CORS origins: %s", settings.CORS_ORIGINS)
 
+# Initialise Firebase Admin SDK once at startup — all routes share the same app instance
+init_firebase()
+
 app.include_router(health.router)
 app.include_router(airports.router)
 app.include_router(flights.router)
 app.include_router(auth.router)
+app.include_router(profile.router)
 
 
 @app.get("/")

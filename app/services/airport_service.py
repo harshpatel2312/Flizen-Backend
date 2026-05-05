@@ -1,6 +1,5 @@
-from app.core.firebase import get_db
 from app.core.logging import get_logger
-from app.models.airport import Airport, AirportResponse
+from app.models.airport import AirportResponse
 from typing import List
 import json
 from pathlib import Path
@@ -8,13 +7,12 @@ from pathlib import Path
 logger = get_logger(__name__)
 
 class AirportService:
-    """Service for airport operations with comprehensive airport database"""
-    
+    """Service for airport operations — reads from the bundled JSON file into memory."""
+
     def __init__(self):
-        self.db = get_db()
-        self.collection = "airports"
-        self._airports_dict = {}  # Cache as dictionary for quick lookup
-        self._airports_list = []  # Cache as list for iteration
+        self.collection = "airports"  # kept for reference; not used at runtime
+        self._airports_dict: dict = {}
+        self._airports_list: list = []
         self._cache_loaded = False
         self._load_airports()
     
@@ -83,8 +81,8 @@ class AirportService:
         
         # Ensure cache is loaded
         if not self._cache_loaded:
-            self._load_all_airports()
-        
+            self._load_airports()
+
         query_upper = query.upper()
         query_lower = query.lower()
         results = []
@@ -129,13 +127,13 @@ class AirportService:
             return results[:limit]
         
         except Exception as e:
-            print(f"Error searching airports: {e}")
+            logger.error("Error searching airports for query '%s': %s", query, e)
             return []
     
     def get_airport_by_iata(self, iata: str) -> AirportResponse:
-        """Get airport by IATA code from cache"""
+        """Get airport by IATA code from cache."""
         if not self._cache_loaded:
-            self._load_all_airports()
+            self._load_airports()
         
         try:
             iata_upper = iata.upper()
@@ -154,13 +152,13 @@ class AirportService:
                 )
             return None
         except Exception as e:
-            print(f"Error fetching airport: {e}")
+            logger.error("Error fetching airport '%s': %s", iata, e)
             return None
     
     def get_all_airports(self, limit: int = None) -> List[AirportResponse]:
-        """Get all airports from cache"""
+        """Get all airports from cache."""
         if not self._cache_loaded:
-            self._load_all_airports()
+            self._load_airports()
         
         try:
             results = []
@@ -184,38 +182,6 @@ class AirportService:
             
             return results
         except Exception as e:
-            print(f"Error fetching airports: {e}")
+            logger.error("Error fetching all airports: %s", e)
             return []
-    
-    def seed_airports(self, airports_data: List[dict]) -> int:
-        """
-        Seed airports collection with initial data using batch writes for better performance.
-        
-        Args:
-            airports_data: List of airport dictionaries
-            
-        Returns:
-            Number of airports added
-        """
-        batch = self.db.batch()
-        count = 0
-        
-        for airport in airports_data:
-            iata = airport.get('iata', '').upper()
-            if iata:
-                # Use IATA code as document ID
-                doc_ref = self.db.collection(self.collection).document(iata)
-                batch.set(doc_ref, airport)
-                count += 1
-                
-                # Firestore batch has a limit of 500 writes, so commit in chunks
-                if count % 500 == 0:
-                    batch.commit()
-                    batch = self.db.batch()
-                    print(f"  ✓ Committed {count} airports...")
-        
-        # Commit remaining documents
-        if count % 500 != 0:
-            batch.commit()
-        
-        return count
+

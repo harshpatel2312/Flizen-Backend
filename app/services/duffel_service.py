@@ -85,9 +85,8 @@ class DuffelService:
                 )
                 
                 if response.status_code != 201:
-                    logger.error(
-                        f"Duffel API error {response.status_code}: {response.text}"
-                    )
+                    # Log status code only — response body may contain sensitive API data
+                    logger.error("Duffel API returned HTTP %d", response.status_code)
                     raise Exception(
                         f"Duffel API returned status {response.status_code}"
                     )
@@ -99,10 +98,10 @@ class DuffelService:
             logger.error("Duffel API request timed out")
             raise Exception("Flight search timed out. Please try again.")
         except httpx.RequestError as e:
-            logger.error(f"Duffel API request failed: {str(e)}")
+            logger.error("Duffel API request failed: %s", e)
             raise Exception("Unable to connect to flight search service.")
         except Exception as e:
-            logger.error(f"Error searching flights: {str(e)}")
+            logger.error("Error searching flights: %s", e)
             raise
     
     def _build_offer_request(
@@ -163,7 +162,7 @@ class DuffelService:
                 if flight:
                     flights.append(flight)
             except Exception as e:
-                logger.warning(f"Failed to parse offer: {str(e)}", exc_info=True)
+                logger.warning("Failed to parse offer: %s", e, exc_info=True)
                 continue
         
         return flights
