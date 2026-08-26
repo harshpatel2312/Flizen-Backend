@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
-from app.routes import airports, flights, health, auth, profile
+from app.routes import airports, flights, health, auth, profile, bookings, payments
 from app.core.firebase import init_firebase
 
 # ---------------------------------------------------------------------------
@@ -58,6 +58,8 @@ app.include_router(airports.router)
 app.include_router(flights.router)
 app.include_router(auth.router)
 app.include_router(profile.router)
+app.include_router(bookings.router)
+app.include_router(payments.router)
 
 
 @app.get("/")

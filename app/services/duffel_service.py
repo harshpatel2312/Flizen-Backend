@@ -9,12 +9,21 @@ from app.core.logging import get_logger
 from app.schemas.flight_schema import (
     DuffelFlightOffer,
     SegmentInfo,
+    SliceSummary,
     FlightCondition,
     FlightConditions,
     BaggageAllowance,
 )
 
 logger = get_logger(__name__)
+
+
+class DuffelOfferNotFoundError(Exception):
+    """Raised when Duffel returns 404/410 for an offer lookup (expired or unknown)."""
+
+
+class DuffelServiceError(Exception):
+    """Raised for any other non-success Duffel API response."""
 
 
 class DuffelService:
@@ -44,27 +53,20 @@ class DuffelService:
         infants: int = 0,
         cabin_class: str = "economy",
         currency: Optional[str] = None,
+        return_date: Optional[str] = None,
     ) -> List[DuffelFlightOffer]:
         """
-        Search for flight offers using Duffel API
-        
-        Args:
-            origin: IATA airport code (e.g., YYZ)
-            destination: IATA airport code (e.g., JFK)
-            departure_date: Date in YYYY-MM-DD format
-            adults: Number of adult passengers
-            children: Number of child passengers
-            infants: Number of infant passengers
-            cabin_class: Cabin class (economy, premium_economy, business, first)
-        
-        Returns:
-            List of DuffelFlightOffer objects
+        Search for flight offers using Duffel API.
+
+        Round-trip: pass ``return_date`` and the request will include a second
+        slice (destination -> origin). The returned offers each contain both
+        slices, share a single ``id`` and a single ``total_amount`` — Duffel's
+        authoritative combined round-trip price.
         """
         if not self.access_token:
             logger.error("Duffel access token not configured")
             raise ValueError("Duffel access token is not configured. Set DUFFEL_ACCESS_TOKEN in .env")
-        
-        # Build offer request payload
+
         payload = self._build_offer_request(
             origin,
             destination,
@@ -74,6 +76,7 @@ class DuffelService:
             infants,
             cabin_class,
             currency,
+            return_date=return_date,
         )
         
         try:
@@ -103,7 +106,102 @@ class DuffelService:
         except Exception as e:
             logger.error("Error searching flights: %s", e)
             raise
-    
+
+    async def get_offer(self, offer_id: str) -> dict:
+        """Fetch a single offer from Duffel to revalidate price/availability.
+
+        Returns the raw `data` object from Duffel. Raises
+        DuffelOfferNotFoundError when the offer is gone (expired or
+        unknown) and DuffelServiceError for any other failure.
+        """
+        if not self.access_token:
+            logger.error("Duffel access token not configured")
+            raise DuffelServiceError("Duffel access token is not configured")
+        if not offer_id or not isinstance(offer_id, str):
+            raise DuffelOfferNotFoundError("offer_id is required")
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{self.base_url}/air/offers/{offer_id}",
+                    headers=self.headers,
+                )
+        except httpx.TimeoutException as exc:
+            logger.error("Duffel get_offer timed out for offer")
+            raise DuffelServiceError("Duffel offer lookup timed out") from exc
+        except httpx.RequestError as exc:
+            logger.error("Duffel get_offer network error: %s", type(exc).__name__)
+            raise DuffelServiceError("Duffel offer lookup failed") from exc
+
+        if response.status_code in (404, 410):
+            # Offer_id intentionally omitted from logs to avoid leaking IDs.
+            logger.info("Duffel offer lookup returned %d", response.status_code)
+            raise DuffelOfferNotFoundError("Offer not found or expired")
+        if response.status_code != 200:
+            logger.error("Duffel get_offer HTTP %d", response.status_code)
+            raise DuffelServiceError(f"Duffel returned status {response.status_code}")
+
+        payload = response.json()
+        return payload.get("data") or {}
+
+    async def create_order(
+        self,
+        *,
+        offer_id: str,
+        amount: str,
+        currency: str,
+        passengers: list,
+        idempotency_key: str,
+    ) -> dict:
+        """Create a Duffel order (instant, paid via Balance).
+
+        Follows the payload shape documented in the Duffel "Create an order"
+        guide: `data.selected_offers`, `data.payments`, `data.passengers`.
+        Never sends services / seat_services — local seat preferences are UI
+        hints only and are NOT confirmed with Duffel here.
+        """
+        if not self.access_token:
+            raise DuffelServiceError("Duffel access token is not configured")
+        if not offer_id:
+            raise DuffelServiceError("offer_id is required")
+
+        payload = {
+            "data": {
+                "type": "instant",
+                "selected_offers": [offer_id],
+                "payments": [{
+                    "type": "balance",
+                    "currency": str(currency).upper(),
+                    "amount": str(amount),
+                }],
+                "passengers": passengers,
+            }
+        }
+        headers = {**self.headers, "Idempotency-Key": idempotency_key}
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/air/orders",
+                    json=payload,
+                    headers=headers,
+                )
+        except httpx.TimeoutException as exc:
+            logger.error("Duffel create_order timed out")
+            raise DuffelServiceError("Duffel order creation timed out") from exc
+        except httpx.RequestError as exc:
+            logger.error("Duffel create_order network error: %s", type(exc).__name__)
+            raise DuffelServiceError("Duffel order creation failed") from exc
+
+        if response.status_code == 201:
+            return response.json().get("data") or {}
+
+        # Body may contain airline-supplied PII; log only the status code.
+        logger.error("Duffel create_order HTTP %d", response.status_code)
+        raise DuffelServiceError(
+            f"Duffel order creation returned status {response.status_code}"
+        )
+
     def _build_offer_request(
         self,
         origin: str,
@@ -114,10 +212,14 @@ class DuffelService:
         infants: int,
         cabin_class: str,
         currency: Optional[str] = None,
+        return_date: Optional[str] = None,
     ) -> dict:
-        """Build Duffel offer request payload"""
-        
-        # Build passengers list
+        """Build Duffel offer request payload.
+
+        One slice for one-way; add a second (destination -> origin) slice when
+        ``return_date`` is provided. Duffel returns per-slice segments plus a
+        single ``total_amount`` for the whole itinerary.
+        """
         passengers = []
         for _ in range(adults):
             passengers.append({"type": "adult"})
@@ -125,15 +227,21 @@ class DuffelService:
             passengers.append({"type": "child"})
         for _ in range(infants):
             passengers.append({"type": "infant"})
-        
+
+        slices = [{
+            "origin": origin.upper(),
+            "destination": destination.upper(),
+            "departure_date": departure_date,
+        }]
+        if return_date:
+            slices.append({
+                "origin": destination.upper(),
+                "destination": origin.upper(),
+                "departure_date": return_date,
+            })
+
         data: dict = {
-            "slices": [
-                {
-                    "origin": origin.upper(),
-                    "destination": destination.upper(),
-                    "departure_date": departure_date,
-                }
-            ],
+            "slices": slices,
             "passengers": passengers,
             "cabin_class": cabin_class.lower(),
         }
@@ -168,10 +276,53 @@ class DuffelService:
         return flights
     
     def _parse_single_offer(self, offer: dict) -> Optional[DuffelFlightOffer]:
-        """Parse a single Duffel offer into DuffelFlightOffer"""
+        """Parse a single Duffel offer into DuffelFlightOffer.
+
+        A round-trip offer has two slices; both share this offer's id and its
+        single ``total_amount``. Per-slice display info is emitted in ``slices``.
+        """
         try:
             slices = offer.get("slices", [])
             if not slices:
+                return None
+
+            # Build per-slice summaries (includes segments) so the frontend can
+            # render outbound and return legs from ONE offer.
+            slice_summaries: List[SliceSummary] = []
+            for sl in slices:
+                sl_segs = sl.get("segments") or []
+                if not sl_segs:
+                    continue
+                sl_first, sl_last = sl_segs[0], sl_segs[-1]
+                sl_origin = ((sl_first.get("origin") or {}).get("iata_code") or "").upper()
+                sl_dest   = ((sl_last.get("destination") or {}).get("iata_code") or "").upper()
+                sl_dep    = sl_first.get("departing_at") or ""
+                sl_arr    = sl_last.get("arriving_at") or ""
+                sl_seg_infos = []
+                for seg in sl_segs:
+                    sl_seg_infos.append(SegmentInfo(
+                        airline=(seg.get("operating_carrier") or {}).get("name") or "Unknown",
+                        flight_number=seg.get("operating_carrier_flight_number") or "",
+                        origin=((seg.get("origin") or {}).get("iata_code") or "").upper(),
+                        destination=((seg.get("destination") or {}).get("iata_code") or "").upper(),
+                        departure_datetime=seg.get("departing_at") or "",
+                        arrival_datetime=seg.get("arriving_at") or "",
+                        duration=seg.get("duration") or None,
+                        aircraft_name=(seg.get("aircraft") or {}).get("name") or None,
+                    ))
+                slice_summaries.append(SliceSummary(
+                    origin=sl_origin,
+                    destination=sl_dest,
+                    departure_time=sl_dep[11:16] if len(sl_dep) > 10 else "00:00",
+                    arrival_time=sl_arr[11:16] if len(sl_arr) > 10 else "00:00",
+                    departure_datetime=sl_dep,
+                    arrival_datetime=sl_arr,
+                    duration=self._calculate_duration(sl_dep, sl_arr),
+                    stops=max(0, len(sl_segs) - 1),
+                    segments=sl_seg_infos,
+                ))
+
+            if not slice_summaries:
                 return None
 
             first_slice = slices[0]
@@ -289,6 +440,8 @@ class DuffelService:
                 price=total_price,
                 currency=currency,
                 segments=segment_list,
+                slices=slice_summaries,
+                slice_count=len(slice_summaries),
                 cabin_class=cabin_class,
                 fare_brand_name=fare_brand_name,
                 conditions=conditions,

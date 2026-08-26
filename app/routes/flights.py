@@ -21,6 +21,7 @@ async def search_flights_duffel(
     infants: int = Query(0, ge=0, description="Number of infant passengers"),
     cabin_class: str = Query("economy", description="Cabin class (economy, premium_economy, business, first)"),
     currency: Optional[str] = Query(None, description="Preferred currency code (e.g. USD, CAD, GBP)"),
+    return_date: Optional[str] = Query(None, description="Return date (YYYY-MM-DD). If set, offers cover a round trip in a single authoritative offer."),
 ):
     """
     Search for real flight offers using Duffel Air API
@@ -77,6 +78,20 @@ async def search_flights_duffel(
                 status_code=400,
                 detail="Invalid date format. Use YYYY-MM-DD."
             )
+
+        if return_date:
+            try:
+                return_dt = datetime.strptime(return_date, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid return_date format. Use YYYY-MM-DD.",
+                )
+            if return_dt < departure_dt:
+                raise HTTPException(
+                    status_code=400,
+                    detail="return_date must be on or after departure_date.",
+                )
         
         # Validate passenger count
         total_passengers = adults + children + infants
@@ -104,6 +119,7 @@ async def search_flights_duffel(
             infants=infants,
             cabin_class=cabin_class,
             currency=currency,
+            return_date=return_date,
         )
         
         # Build response
