@@ -31,7 +31,8 @@ async def verify_token(payload: TokenRequest):
     except auth.InvalidIdTokenError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     except Exception as exc:
-        logger.error("Token verification failed: %s", exc)
+        # Never log the raw token or a Firebase error message that may reference it.
+        logger.error("Token verification failed: %s", type(exc).__name__)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token verification failed")
 
     logger.info("Authenticated user uid=%s email=%s", decoded.get("uid"), decoded.get("email"))

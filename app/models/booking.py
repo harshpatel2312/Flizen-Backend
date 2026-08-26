@@ -1,0 +1,184 @@
+"""Pydantic models for booking-draft requests and responses.
+
+Design rules:
+- The request never carries price, currency, or offer expiry. Those are
+  authoritative fields taken from Duffel server-side.
+- `extra='forbid'` blocks any attempt by the client to smuggle
+  price/amount/currency fields into a draft.
+- Seat preferences are treated as UI hints only, never as Duffel seat
+  service IDs.
+"""
+from datetime import date
+from typing import List, Optional
+import re
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$")
+_PHONE_RE = re.compile(r"^\+?[\d\s\-(). ]{7,20}$")
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+PASSENGER_TYPES = {"adult", "child", "infant"}
+GENDER_VALUES = {"male", "female", "unknown", "m", "f", "x"}
+
+
+class BookingPassenger(BaseModel):
+    """Minimum passenger fields required to draft a booking."""
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = Field(default="adult")
+    given_name: str
+    family_name: str
+    born_on: str = Field(..., description="Date of birth in YYYY-MM-DD")
+    gender: str
+
+    @field_validator("type")
+    @classmethod
+    def _type(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in PASSENGER_TYPES:
+            raise ValueError(f"type must be one of {sorted(PASSENGER_TYPES)}")
+        return v
+
+    @field_validator("given_name", "family_name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("must not be empty")
+        if len(v) > 100:
+            raise ValueError("too long")
+        return v
+
+    @field_validator("born_on")
+    @classmethod
+    def _born_on(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not _ISO_DATE_RE.match(v):
+            raise ValueError("born_on must be YYYY-MM-DD")
+        try:
+            date.fromisoformat(v)
+        except ValueError as exc:
+            raise ValueError("born_on is not a valid date") from exc
+        return v
+
+    @field_validator("gender")
+    @classmethod
+    def _gender(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in GENDER_VALUES:
+            raise ValueError(f"gender must be one of {sorted(GENDER_VALUES)}")
+        return v
+
+
+class SeatPreference(BaseModel):
+    """Local UI seat pick. Stored as a preference only, never sent to Duffel."""
+    model_config = ConfigDict(extra="forbid")
+
+    segment_key: str
+    passenger_index: int = Field(..., ge=0)
+    seat_id_local: str
+
+
+class BookingDraftRequest(BaseModel):
+    """Client-supplied fields for a booking draft.
+
+    NOTE: no `amount`, `currency`, or `price` fields exist here by design.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    offer_id: str
+    # Present in the current UI's round-trip model. Rejected at the route until
+    # a single multi-slice offer is used instead.
+    return_offer_id: Optional[str] = None
+    passengers: List[BookingPassenger] = Field(..., min_length=1, max_length=9)
+    contact_email: str
+    contact_phone: Optional[str] = None
+    seat_preferences: List[SeatPreference] = Field(default_factory=list)
+
+    @field_validator("offer_id", "return_offer_id")
+    @classmethod
+    def _offer_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            raise ValueError("must not be empty")
+        return v
+
+    @field_validator("contact_email")
+    @classmethod
+    def _email(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not _EMAIL_RE.match(v):
+            raise ValueError("invalid email")
+        return v
+
+    @field_validator("contact_phone")
+    @classmethod
+    def _phone(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not v.strip():
+            return None
+        v = v.strip()
+        if not _PHONE_RE.match(v):
+            raise ValueError("invalid phone")
+        return v
+
+
+class BookingDraftResponse(BaseModel):
+    """Server-authoritative snapshot returned for POST /draft and GET /{id}."""
+    booking_id: str
+    status: str
+    amount: str
+    currency: str
+    offer_expires_at: Optional[str] = None
+    slice_count: int = 0
+
+
+class FlightSummary(BaseModel):
+    """Minimal display fields extracted from the Duffel offer at draft time.
+
+    For round-trip offers (single Duffel offer with two slices), the return
+    slice is exposed via `return_*` fields. Only display info, no PII.
+    """
+    from_airport:   Optional[str] = None
+    to_airport:     Optional[str] = None
+    airline:        Optional[str] = None
+    departure_date: Optional[str] = None
+    # Return slice — populated only for round-trip offers.
+    return_from_airport:   Optional[str] = None
+    return_to_airport:     Optional[str] = None
+    return_departure_date: Optional[str] = None
+    is_round_trip: bool = False
+
+
+class BookingSummary(BaseModel):
+    """Response shape for GET /api/bookings and GET /api/bookings/{id}.
+
+    Deliberately excludes: payment_intent_id, stripe_charge_id, payment
+    amount in minor units, passenger PII (names, DOB, passport), contact
+    details, offer_id, and seat preferences.
+    """
+    booking_id: str
+    status: str
+    amount: str
+    currency: str
+    slice_count: int = 0
+    passenger_count: int = 0
+    # High-level lifecycle signals — safe to expose.
+    payment_status: Optional[str] = None
+    refund_state:   Optional[str] = None
+    failure_reason: Optional[str] = None
+    # Populated ONLY when Duffel has confirmed the order.
+    duffel_booking_reference: Optional[str] = None
+    flight_summary: Optional[FlightSummary] = None
+    created_at:    Optional[str] = None
+    updated_at:    Optional[str] = None
+    confirmed_at:  Optional[str] = None
+    offer_expires_at: Optional[str] = None
+
+
+class BookingsListResponse(BaseModel):
+    bookings: list[BookingSummary]
+    count: int

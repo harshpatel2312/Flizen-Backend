@@ -39,6 +39,19 @@ class BaggageAllowance(BaseModel):
     max_weight_kg: Optional[float] = None
 
 
+class SliceSummary(BaseModel):
+    """One slice of an offer (outbound or return). Segments are per-slice."""
+    origin: str
+    destination: str
+    departure_time: str
+    arrival_time: str
+    departure_datetime: str
+    arrival_datetime: str
+    duration: Optional[str] = None
+    stops: int = 0
+    segments: List[SegmentInfo] = Field(default_factory=list)
+
+
 class DuffelFlightOffer(BaseModel):
     """Flight offer formatted for frontend"""
     id: str = Field(..., description="Unique offer ID from Duffel")
@@ -56,7 +69,9 @@ class DuffelFlightOffer(BaseModel):
     price: str = Field(..., description="Total price as string")
     currency: str = Field(default="USD", description="Currency code")
     # Extended fields
-    segments: List[SegmentInfo] = Field(default_factory=list, description="Individual flight legs")
+    segments: List[SegmentInfo] = Field(default_factory=list, description="Individual flight legs (outbound slice; kept for backward compat)")
+    slices: List[SliceSummary] = Field(default_factory=list, description="All itinerary slices — len==1 for one-way, len==2 for round-trip. Both share this offer id.")
+    slice_count: int = Field(default=1, ge=1, description="Number of slices in this offer")
     cabin_class: Optional[str] = Field(None, description="Cabin class label")
     fare_brand_name: Optional[str] = Field(None, description="Fare brand / ticket type")
     conditions: Optional[FlightConditions] = Field(None, description="Refund / change conditions")
