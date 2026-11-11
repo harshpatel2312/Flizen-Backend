@@ -118,6 +118,7 @@ def _rt_body(**overrides):
             "born_on": "1990-01-01", "gender": "female",
         }],
         "contact_email": "jane@example.com",
+        "contact_phone": "+15551234567",
         "seat_preferences": [],
     }
     body.update(overrides)

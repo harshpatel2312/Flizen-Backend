@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.core.logging import get_logger
+from app.models.booking import normalize_phone_e164
 from app.services.duffel_service import (
     DuffelOfferNotFoundError,
     DuffelServiceError,
@@ -42,19 +43,28 @@ def _now() -> str:
 
 
 def _get(obj: Any, key: str, default=None):
-    """Access .attr or [key] from a Stripe Event / dict interchangeably."""
+    """Access .attr or [key] from a Stripe Event / dict interchangeably.
+
+    stripe-python 15+ wraps webhook payloads in StripeObject, which is NOT a
+    dict subclass and does not expose a .get() method. Prefer bracket access
+    for dict-likes and attribute access for everything else.
+    """
     if obj is None:
         return default
     if isinstance(obj, dict):
         return obj.get(key, default)
+    try:
+        return obj[key]
+    except (KeyError, TypeError):
+        pass
     return getattr(obj, key, default)
 
 
 def _extract_booking_id(stripe_object: Any) -> Optional[str]:
-    md = _get(stripe_object, "metadata") or {}
-    if hasattr(md, "get"):
-        return md.get("flizen_booking_id")
-    return None
+    md = _get(stripe_object, "metadata")
+    if md is None:
+        return None
+    return _get(md, "flizen_booking_id")
 
 
 def _map_gender(g: Optional[str]) -> str:
@@ -82,7 +92,7 @@ def _build_duffel_passengers(offer: dict, stored_passengers: list, contact: dict
             "gender":        _map_gender(stored.get("gender")),
             "title":         _derive_title(stored.get("gender")),
             "email":         (contact or {}).get("email"),
-            "phone_number":  (contact or {}).get("phone") or "",
+            "phone_number":  normalize_phone_e164((contact or {}).get("phone")),
         })
     return result
 

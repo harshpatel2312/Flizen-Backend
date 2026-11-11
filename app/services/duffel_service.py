@@ -196,8 +196,21 @@ class DuffelService:
         if response.status_code == 201:
             return response.json().get("data") or {}
 
-        # Body may contain airline-supplied PII; log only the status code.
+        # Log only Duffel's structured error codes (title/type/code/message) —
+        # these are documented and PII-free. Never log the full body.
         logger.error("Duffel create_order HTTP %d", response.status_code)
+        try:
+            body = response.json() or {}
+            for err in (body.get("errors") or [])[:5]:
+                logger.error(
+                    "Duffel error title=%r type=%r code=%r message=%r",
+                    err.get("title"),
+                    err.get("type"),
+                    err.get("code"),
+                    err.get("message"),
+                )
+        except Exception:
+            pass
         raise DuffelServiceError(
             f"Duffel order creation returned status {response.status_code}"
         )
