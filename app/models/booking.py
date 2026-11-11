@@ -16,7 +16,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$")
-_PHONE_RE = re.compile(r"^\+?[\d\s\-(). ]{7,20}$")
+_PHONE_FORMATTING_RE = re.compile(r"[\s\-().]")
+# E.164 — the only phone format Duffel accepts when creating an order.
+_E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+
+
+def normalize_phone_e164(raw: Optional[str]) -> str:
+    """Strip common formatting characters, e.g. '+1 (416) 555-1234' -> '+14165551234'."""
+    return _PHONE_FORMATTING_RE.sub("", raw or "")
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 PASSENGER_TYPES = {"adult", "child", "infant"}
@@ -94,7 +101,7 @@ class BookingDraftRequest(BaseModel):
     return_offer_id: Optional[str] = None
     passengers: List[BookingPassenger] = Field(..., min_length=1, max_length=9)
     contact_email: str
-    contact_phone: Optional[str] = None
+    contact_phone: str
     seat_preferences: List[SeatPreference] = Field(default_factory=list)
 
     @field_validator("offer_id", "return_offer_id")
@@ -117,12 +124,10 @@ class BookingDraftRequest(BaseModel):
 
     @field_validator("contact_phone")
     @classmethod
-    def _phone(cls, v: Optional[str]) -> Optional[str]:
-        if v is None or not v.strip():
-            return None
-        v = v.strip()
-        if not _PHONE_RE.match(v):
-            raise ValueError("invalid phone")
+    def _phone(cls, v: str) -> str:
+        v = normalize_phone_e164(v)
+        if not _E164_RE.match(v):
+            raise ValueError("phone must include country code, e.g. +14165551234")
         return v
 
 

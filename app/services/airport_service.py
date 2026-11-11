@@ -86,11 +86,31 @@ class AirportService:
         query_upper = query.upper()
         query_lower = query.lower()
         results = []
-        
+        seen_iatas: set[str] = set()
+
         try:
+            # Guarantee an exact IATA hit is always included, even if the list
+            # iteration below bails early on more common substrings.
+            if len(query_upper) == 3 and query_upper in self._airports_dict:
+                exact = self._airports_dict[query_upper]
+                results.append(AirportResponse(
+                    id=query_upper,
+                    iata=exact.get('iata', ''),
+                    name=exact.get('name', ''),
+                    city=exact.get('city', ''),
+                    country=exact.get('country', ''),
+                    latitude=exact.get('latitude', 0),
+                    longitude=exact.get('longitude', 0),
+                    icao=exact.get('icao'),
+                    timezone=exact.get('timezone')
+                ))
+                seen_iatas.add(query_upper)
+
             # Search through all cached airports
             for airport in self._airports_list:
                 iata = airport.get('iata', '').upper()
+                if iata in seen_iatas:
+                    continue
                 name = airport.get('name', '').lower()
                 city = airport.get('city', '').lower()
                 country = airport.get('country', '').lower()
@@ -113,6 +133,7 @@ class AirportService:
                         icao=airport.get('icao'),
                         timezone=airport.get('timezone')
                     ))
+                    seen_iatas.add(iata)
                 
                 if len(results) >= limit * 2:  # Collect extra for better sorting
                     break
