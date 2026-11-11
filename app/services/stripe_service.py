@@ -94,6 +94,19 @@ def to_stripe_minor_units(amount: str, currency: str) -> int:
     return int((q * 100).to_integral_value())
 
 
+def from_stripe_minor_units(amount_minor: Optional[int], currency: Optional[str]) -> Optional[str]:
+    """Inverse of to_stripe_minor_units, for display: 5373 USD -> '53.73'."""
+    if amount_minor is None or not currency:
+        return None
+    try:
+        minor = int(amount_minor)
+    except (TypeError, ValueError):
+        return None
+    if currency.upper() in ZERO_DECIMAL_CURRENCIES:
+        return str(minor)
+    return f"{Decimal(minor) / 100:.2f}"
+
+
 class StripeService:
     """Thin wrapper so tests can inject a fake via FastAPI's dependency system."""
 
@@ -150,12 +163,14 @@ class StripeService:
         payment_intent_id: str,
         idempotency_key: str,
         reason: str = "requested_by_customer",
+        metadata: Optional[dict] = None,
     ):
         s = self._configured()
         try:
             return s.Refund.create(
                 payment_intent=payment_intent_id,
                 reason=reason,
+                metadata=metadata or {},
                 idempotency_key=idempotency_key,
             )
         except s.error.StripeError as exc:  # type: ignore[attr-defined]

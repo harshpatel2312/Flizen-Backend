@@ -22,7 +22,7 @@ app/
   routes/
     airports.py            # GET /airports/search, GET /airports/{iata}
     auth.py                # POST /auth/verify
-    bookings.py            # POST /api/bookings/draft, GET /api/bookings, GET /api/bookings/{id}
+    bookings.py            # drafts, booking history, booking summary, trip details
     flights.py             # GET /api/flights/search
     health.py              # GET /health
     payments.py            # POST /api/payments/intents, POST /api/payments/webhook
@@ -31,14 +31,21 @@ app/
     flight_schema.py       # Duffel offer response models
   services/
     airport_service.py     # Airport lookup from the JSON cache
+    booking_records.py     # Payment records: bookings/{id}/payments/{payment_intent_id}
     duffel_service.py      # Duffel offers / orders integration
     fulfillment_service.py # Stripe webhook -> Duffel order -> refund on failure
+    itinerary.py           # Duffel offer/order -> stored itinerary (slices, segments)
     stripe_service.py      # Stripe PaymentIntents, refunds, webhook verification
   data/
     airports.json          # Airport database used by airport_service
     airports.csv           # Source CSV (not loaded at runtime)
-tests/                     # pytest suite (bookings, payments, webhook, round trip)
+docs/
+  FIRESTORE.md             # Firestore data model, status flow, duplicate protection
+tests/                     # pytest suite (bookings, payments, webhook, round trip, trips)
 logs/                      # Log output directory (auto-created)
+firebase.json              # Firebase CLI config (Firestore rules + indexes)
+firestore.rules            # Security rules: owner-only reads, no client writes
+firestore.indexes.json     # Composite indexes
 requirements.txt
 ```
 
@@ -68,13 +75,24 @@ Place your Firebase service-account JSON at `FIREBASE_CREDENTIALS_PATH`. Do **no
 
 ### Firestore
 
-| Collection      | Contents                                                        |
-|-----------------|-----------------------------------------------------------------|
-| `users`         | User profiles (`GET` / `PUT /profile`).                         |
-| `bookings`      | Booking drafts and their payment / fulfillment state.           |
-| `stripe_events` | Processed Stripe event ids (webhook idempotency lock).          |
+| Collection / path                                 | Contents                                                        |
+|---------------------------------------------------|-----------------------------------------------------------------|
+| `users/{uid}`                                     | User profiles (`GET` / `PUT /profile`).                         |
+| `bookings/{bookingId}`                            | Booking, travellers, itinerary, and payment / fulfillment state. |
+| `bookings/{bookingId}/payments/{paymentIntentId}` | One record per Stripe payment attempt (ids, amounts, statuses, refunds). |
+| `stripe_events/{eventId}`                         | Processed Stripe event ids (webhook idempotency lock).          |
 
-`GET /api/bookings` filters by `uid` and sorts by `created_at`, so Firestore needs a **composite index** on `bookings`: `uid` ascending, `created_at` descending. Without it the endpoint returns 500 and the log shows `Failed to list bookings: FailedPrecondition`. The full Firestore error contains a direct link to create the index.
+All reads and writes go through this backend (Firebase Admin SDK); the frontend never accesses Firestore directly. Full field reference, status flow, and duplicate protection: [docs/FIRESTORE.md](docs/FIRESTORE.md).
+
+Security rules (`firestore.rules`: owner-only reads, no client writes) and composite indexes (`firestore.indexes.json`) are deployed with the [Firebase CLI](https://firebase.google.com/docs/cli):
+
+```bash
+npm install -g firebase-tools
+firebase login
+firebase deploy --only firestore:rules,firestore:indexes --project <your-project-id>
+```
+
+`GET /api/bookings` sorts by `created_at` using the `bookings` index (`uid` asc, `created_at` desc). Until that index is deployed, the endpoint logs a warning and falls back to an unordered query sorted in Python, so it keeps working.
 
 ## Running
 
@@ -124,8 +142,9 @@ stripe trigger charge.refunded
 | GET    | `/profile`                   | Yes  | Fetch the signed-in user's profile                              |
 | PUT    | `/profile`                   | Yes  | Save the signed-in user's profile                               |
 | POST   | `/api/bookings/draft`        | Yes  | Create a booking draft from one Duffel offer                    |
-| GET    | `/api/bookings`              | Yes  | List the user's bookings (newest first)                         |
-| GET    | `/api/bookings/{booking_id}` | Yes  | Fetch one of the user's bookings                                |
+| GET    | `/api/bookings`              | Yes  | List the user's bookings (newest first, up to 200)              |
+| GET    | `/api/bookings/{booking_id}` | Yes  | Booking summary (used for live status polling)                  |
+| GET    | `/api/bookings/{booking_id}/details` | Yes | Trip details for My Trips: itinerary, traveller names, payment history |
 | POST   | `/api/payments/intents`      | Yes  | Create or reuse a Stripe PaymentIntent for a draft              |
 | POST   | `/api/payments/webhook`      | Stripe signature | Stripe webhook (signature-verified, idempotent)     |
 
@@ -165,16 +184,19 @@ Round trips are returned as a single Duffel offer with two slices and one bundle
 
 ## Booking and payment flow
 
-1. **Draft:** `POST /api/bookings/draft` re-fetches the Duffel offer and stores a booking with the server-side price, passengers, contact details, and seat preferences. The client never sends a price.
-2. **Payment:** `POST /api/payments/intents` creates (or reuses) a Stripe PaymentIntent for the draft. The offer is revalidated first; if the price changed, the request is rejected. Metadata contains only `booking_id`, `uid`, and `offer_id`, never passenger PII.
-3. **Fulfillment:** on `payment_intent.succeeded`, the webhook creates the Duffel order. The booking becomes `confirmed` only after Duffel returns an order id and booking reference.
-4. **Failure / refund:** if the order fails (e.g. offer expired, price changed, or Duffel rejects the request), the booking moves to `failed_refunding` and a Stripe refund is issued automatically. It becomes `refunded` when `charge.refunded` arrives.
+1. **Draft:** `POST /api/bookings/draft` re-fetches the Duffel offer and stores a booking with the server-side price, passengers, contact details, seat preferences, and the full itinerary. The client never sends a price. Submitting an identical checkout again (e.g. after going Back) returns the same open draft instead of creating a duplicate.
+2. **Payment:** `POST /api/payments/intents` creates (or reuses) a Stripe PaymentIntent for the draft and records it under `bookings/{id}/payments/{payment_intent_id}`. The offer is revalidated first; if the price changed, the request is rejected. Metadata contains only `booking_id`, `uid`, and `offer_id`, never passenger PII. A booking whose card was declined (`payment_failed`) can be paid again on the same PaymentIntent.
+3. **Fulfillment:** on `payment_intent.succeeded`, the webhook creates the Duffel order. The booking becomes `confirmed` only after Duffel returns an order id and booking reference, and its itinerary is refreshed from the order.
+4. **Failure / refund:** if the order fails (e.g. offer expired, price changed, or Duffel rejects the request), the booking moves to `failed_refunding` and a Stripe refund is issued automatically (tagged with the booking id). It becomes `refunded` when `charge.refunded` arrives for the full amount; partial refunds are recorded without changing the booking status.
+
+Every handled webhook (`payment_intent.*`, `charge.refunded`, `refund.*`) also updates the payment record, which never moves backwards (a late decline cannot overwrite a success). Refund events without our metadata are matched to the booking through their PaymentIntent.
 
 Status flow:
 
 ```
 draft_awaiting_payment -> fulfilling -> confirmed
-draft_awaiting_payment -> payment_failed | canceled
+draft_awaiting_payment <-> payment_failed   (declined card; retry allowed)
+draft_awaiting_payment | payment_failed -> canceled
 fulfilling -> failed_refunding -> refunded
 ```
 
@@ -218,7 +240,7 @@ Firestore, Duffel, and Stripe are replaced with in-memory fakes via FastAPI depe
 2. Set `ENVIRONMENT=production`.
 3. Use a live Duffel token (`duffel_live_...`) and live Stripe keys.
 4. Create the Stripe webhook endpoint for `/api/payments/webhook` and put its signing secret in `STRIPE_WEBHOOK_SECRET`.
-5. Create the Firestore composite index for `bookings` (`uid` asc, `created_at` desc).
+5. Deploy `firestore.rules` and `firestore.indexes.json` (`firebase deploy --only firestore:rules,firestore:indexes`).
 6. Lock `CORS_ORIGINS` to the production frontend URL(s).
 7. Serve over HTTPS; never expose the webhook route over plain HTTP.
 8. Load the Firebase service-account credentials from a secret manager, not the filesystem.

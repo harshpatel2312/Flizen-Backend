@@ -222,8 +222,32 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Other
+# Secrets and credentials (keep .env.example committed)
+.env.*
+!.env.example
 firebase-admin-key.json
+*-firebase-adminsdk-*.json
+serviceAccount*.json
+service-account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Firebase CLI / emulators (.firebaserc is safe to commit)
+.firebase/
+firebase-debug.log*
+firebase-debug.*.log*
+firestore-debug.log*
+ui-debug.log*
+emulator-data/
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.swp
 
 # Data files
 airports.csv
