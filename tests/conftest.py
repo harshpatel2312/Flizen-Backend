@@ -57,6 +57,10 @@ class _FakeDocRef:
         data = self._store.get(self._path)
         return _FakeDoc(dict(data) if data is not None else None)
 
+    def collection(self, name):
+        # Subcollections live under "<doc path>/<name>/<id>".
+        return _FakeCollection(self._store, f"{self._path}/{name}")
+
 
 class _FakeCollection:
     def __init__(self, store, name):
@@ -69,25 +73,33 @@ class _FakeCollection:
     def where(self, field, op, value):
         return _FakeQuery(self._store, self._name, [(field, op, value)])
 
+    def stream(self):
+        return _FakeQuery(self._store, self._name, []).stream()
+
 
 class _FakeQuery:
-    def __init__(self, store, name, filters, order=None):
+    def __init__(self, store, name, filters, order=None, limit=None):
         self._store = store
         self._name = name
         self._filters = list(filters)
         self._order = order  # (field, direction)
+        self._limit = limit
 
     def where(self, field, op, value):
-        return _FakeQuery(self._store, self._name, self._filters + [(field, op, value)], self._order)
+        return _FakeQuery(self._store, self._name, self._filters + [(field, op, value)], self._order, self._limit)
 
     def order_by(self, field, direction="ASCENDING"):
-        return _FakeQuery(self._store, self._name, self._filters, (field, direction))
+        return _FakeQuery(self._store, self._name, self._filters, (field, direction), self._limit)
+
+    def limit(self, count):
+        return _FakeQuery(self._store, self._name, self._filters, self._order, count)
 
     def stream(self):
         prefix = f"{self._name}/"
         rows = []
         for path, doc in self._store.items():
-            if not path.startswith(prefix):
+            # Direct children only — never documents of nested subcollections.
+            if not path.startswith(prefix) or "/" in path[len(prefix):]:
                 continue
             ok = True
             for field, op, val in self._filters:
@@ -101,6 +113,8 @@ class _FakeQuery:
             field, direction = self._order
             reverse = str(direction).upper().startswith("DESC")
             rows.sort(key=lambda d: d.get(field) or "", reverse=reverse)
+        if self._limit is not None:
+            rows = rows[: self._limit]
         return [_FakeDoc(dict(r)) for r in rows]
 
 
@@ -245,11 +259,12 @@ def app_and_client(fake_db, monkeypatch):
                 pi.status = "canceled"
             return pi
 
-        def create_refund(self, *, payment_intent_id, idempotency_key, reason="requested_by_customer"):
+        def create_refund(self, *, payment_intent_id, idempotency_key, reason="requested_by_customer", metadata=None):
             self.refunds.append({
                 "payment_intent_id": payment_intent_id,
                 "idempotency_key": idempotency_key,
                 "reason": reason,
+                "metadata": dict(metadata or {}),
             })
             if self.raise_on_refund is not None:
                 raise self.raise_on_refund

@@ -3,7 +3,8 @@
 Rules enforced here:
 - Firebase auth required.
 - Only the owner of the booking may create a PaymentIntent for it.
-- Booking must be in draft_awaiting_payment status.
+- Booking must be awaiting payment: a fresh draft, or a draft whose previous
+  attempt was declined (Stripe keeps the PaymentIntent open for a retry).
 - Amount + currency are read from the booking draft (server-side).
 - Duffel offer is revalidated before creating a NEW intent, so we don't
   charge for a stale price.
@@ -11,6 +12,8 @@ Rules enforced here:
 - Idempotency key covers (booking_id, amount, currency) so a retry with the
   same price returns the same intent.
 - On refresh, an eligible existing PaymentIntent is reused.
+- Every intent is mirrored to bookings/{id}/payments/{intent_id} (ids,
+  amounts, status only — never the client secret).
 """
 from datetime import datetime, timezone
 from typing import Annotated
@@ -22,6 +25,7 @@ from app.core.logging import get_logger
 from app.models.payment import PaymentIntentRequest, PaymentIntentResponse
 from app.routes.bookings import get_bookings_db, get_duffel_service
 from app.services import fulfillment_service
+from app.services.booking_records import record_payment
 from app.services.duffel_service import (
     DuffelOfferNotFoundError,
     DuffelService,
@@ -42,7 +46,7 @@ from app.services.stripe_service import (
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/payments", tags=["payments"])
 
-_PAYABLE_BOOKING_STATUSES = frozenset({"draft_awaiting_payment"})
+_PAYABLE_BOOKING_STATUSES = frozenset({"draft_awaiting_payment", "payment_failed"})
 
 _stripe_service = StripeService()
 
@@ -152,6 +156,12 @@ async def create_or_reuse_payment_intent(
                     "Reusing PaymentIntent booking_id=%s status=%s",
                     body.booking_id, ex_status,
                 )
+                # Backfills a record for intents created before payment records existed.
+                record_payment(
+                    db, booking_id=body.booking_id, payment_intent_id=existing_intent_id,
+                    uid=uid, status=ex_status, amount=str(amount_str),
+                    amount_minor=ex_amount, currency=ex_currency,
+                )
                 return PaymentIntentResponse(
                     booking_id=body.booking_id,
                     client_secret=ex_client_secret,
@@ -165,6 +175,10 @@ async def create_or_reuse_payment_intent(
             if ex_status in REUSABLE_STATUSES:
                 try:
                     stripe_svc.cancel_payment_intent(existing_intent_id)
+                    record_payment(
+                        db, booking_id=body.booking_id, payment_intent_id=existing_intent_id,
+                        uid=uid, status="canceled",
+                    )
                 except StripeServiceError:
                     # Non-fatal — proceed to create a new intent regardless.
                     pass
@@ -236,6 +250,12 @@ async def create_or_reuse_payment_intent(
         logger.error("Failed to persist payment intent id: %s", type(exc).__name__)
         # Don't raise — the intent already exists in Stripe. The idempotency key
         # will let a retry resolve to the same intent.
+
+    record_payment(
+        db, booking_id=body.booking_id, payment_intent_id=intent_id, uid=uid,
+        status=intent_status, amount=str(amount_str), amount_minor=amount_minor,
+        currency=currency.upper(),
+    )
 
     logger.info(
         "PaymentIntent ready booking_id=%s intent_id=%s status=%s",

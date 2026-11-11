@@ -24,6 +24,8 @@ _E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 def normalize_phone_e164(raw: Optional[str]) -> str:
     """Strip common formatting characters, e.g. '+1 (416) 555-1234' -> '+14165551234'."""
     return _PHONE_FORMATTING_RE.sub("", raw or "")
+
+
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 PASSENGER_TYPES = {"adult", "child", "infant"}
@@ -156,6 +158,7 @@ class FlightSummary(BaseModel):
     return_to_airport:     Optional[str] = None
     return_departure_date: Optional[str] = None
     is_round_trip: bool = False
+    airline_logo_url: Optional[str] = None
 
 
 class BookingSummary(BaseModel):
@@ -187,3 +190,75 @@ class BookingSummary(BaseModel):
 class BookingsListResponse(BaseModel):
     bookings: list[BookingSummary]
     count: int
+
+
+# ─── Trip details (GET /api/bookings/{id}/details) ──────────────────────────
+# Owner-only view used by My Trips. Adds the itinerary, traveller names, and
+# payment history on top of the summary. Still excludes Stripe/Duffel ids,
+# client secrets, dates of birth, passport data, phone numbers, and seat ids.
+
+class ItinerarySegment(BaseModel):
+    origin:            Optional[str] = None
+    origin_city:       Optional[str] = None
+    destination:       Optional[str] = None
+    destination_city:  Optional[str] = None
+    departing_at:      Optional[str] = None
+    arriving_at:       Optional[str] = None
+    duration:          Optional[str] = None
+    airline:           Optional[str] = None
+    airline_code:      Optional[str] = None
+    flight_number:     Optional[str] = None
+    operating_airline: Optional[str] = None
+    aircraft:          Optional[str] = None
+    cabin:             Optional[str] = None
+
+
+class ItinerarySlice(BaseModel):
+    origin:           Optional[str] = None
+    origin_city:      Optional[str] = None
+    destination:      Optional[str] = None
+    destination_city: Optional[str] = None
+    departing_at:     Optional[str] = None
+    arriving_at:      Optional[str] = None
+    duration:         Optional[str] = None
+    stops:            int = 0
+    fare_brand:       Optional[str] = None
+    segments:         List[ItinerarySegment] = Field(default_factory=list)
+
+
+class Itinerary(BaseModel):
+    airline:          Optional[str] = None
+    airline_logo_url: Optional[str] = None
+    slices:           List[ItinerarySlice] = Field(default_factory=list)
+
+
+class TravellerSummary(BaseModel):
+    given_name:  str = ""
+    family_name: str = ""
+    type:        str = "adult"
+
+
+class PaymentRecordSummary(BaseModel):
+    status:          Optional[str] = None
+    amount:          Optional[str] = None
+    currency:        Optional[str] = None
+    amount_refunded: Optional[str] = None
+    refund_status:   Optional[str] = None
+    failure_code:    Optional[str] = None
+    created_at:      Optional[str] = None
+    succeeded_at:    Optional[str] = None
+    failed_at:       Optional[str] = None
+    canceled_at:     Optional[str] = None
+    refunded_at:     Optional[str] = None
+
+
+class BookingDetails(BookingSummary):
+    itinerary:            Optional[Itinerary] = None
+    travellers:           List[TravellerSummary] = Field(default_factory=list)
+    contact_email:        Optional[str] = None
+    payments:             List[PaymentRecordSummary] = Field(default_factory=list)
+    payment_received_at:  Optional[str] = None
+    payment_failed_at:    Optional[str] = None
+    canceled_at:          Optional[str] = None
+    refund_initiated_at:  Optional[str] = None
+    refunded_at:          Optional[str] = None

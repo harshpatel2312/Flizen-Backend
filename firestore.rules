@@ -1,0 +1,47 @@
+rules_version = '2';
+
+// Flizen Firestore security rules.
+//
+// All writes go through the FastAPI backend (Firebase Admin SDK) or
+// signature-verified Stripe webhooks; the Admin SDK bypasses these rules.
+// Clients may only read their own data, and may never write.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    // User profiles: written through PUT /profile (validated server-side).
+    match /users/{uid} {
+      allow read: if isOwner(uid);
+      allow write: if false;
+    }
+
+    // Bookings and their payment records. A client list query must filter
+    // on its own uid (where("uid", "==", auth.uid)) to pass this rule.
+    match /bookings/{bookingId} {
+      allow read: if isOwner(resource.data.uid);
+      allow write: if false;
+
+      match /payments/{paymentIntentId} {
+        allow read: if isOwner(resource.data.uid);
+        allow write: if false;
+      }
+    }
+
+    // Stripe webhook idempotency locks: backend only.
+    match /stripe_events/{eventId} {
+      allow read, write: if false;
+    }
+
+    // Deny everything else by default.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
