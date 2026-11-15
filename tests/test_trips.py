@@ -177,7 +177,7 @@ def test_paid_or_expired_draft_is_not_reused(app_and_client):
 
 _DETAIL_FORBIDDEN = {
     "payment_intent_id", "stripe_charge_id", "client_secret", "offer_id",
-    "duffel_order_id", "uid", "born_on", "passport", "phone", "contact",
+    "uid", "born_on", "passport", "phone", "contact",
     "passengers", "seat_preferences", "draft_fingerprint", "refund_id",
 }
 
@@ -312,12 +312,24 @@ def test_payment_failed_booking_can_reopen_checkout(app_and_client):
 def test_confirmation_refreshes_itinerary_from_duffel_order(app_and_client):
     _app, client, duffel, db, _stripe = app_and_client
     booking_id = _seed(db, itinerary={"airline": "Old", "slices": []})
+    seg = _segment("YYZ", "ORD", "2026-12-10T08:15:00", "2026-12-10T09:45:00", "100")
+    seg["origin"]["name"] = "Toronto Pearson International Airport"
+    seg["origin_terminal"] = "1"
+    seg["passengers"] = [{
+        "passenger_id": "pas_1", "cabin_class_marketing_name": "Economy",
+        "seat": {"designator": "12A"}, "baggages": [{"type": "checked", "quantity": 1}],
+    }]
     duffel.order_data = {
         "id": "ord_1", "booking_reference": "ABC123",
         "owner": {"name": "Duffel Airways"},
-        "slices": [{"duration": "PT2H", "segments": [
-            _segment("YYZ", "ORD", "2026-12-10T08:15:00", "2026-12-10T09:45:00", "100"),
-        ]}],
+        "passengers": [{"id": "pas_1", "given_name": "Jane", "born_on": "1990-01-01"}],
+        "base_amount": "80.00", "base_currency": "USD",
+        "tax_amount": "20.00", "tax_currency": "USD",
+        "total_amount": "100.00", "total_currency": "USD",
+        "conditions": {"refund_before_departure": {"allowed": True, "penalty_amount": "10.00", "penalty_currency": "USD"}},
+        "booking_references": [{"booking_reference": "ABC123", "carrier": {"name": "Duffel Airways", "iata_code": "ZZ"}}],
+        "documents": [{"type": "electronic_ticket", "unique_identifier": "1252100000001", "passenger_ids": ["pas_1"]}],
+        "slices": [{"duration": "PT2H", "segments": [seg]}],
     }
     event = _event("evt_c1", "payment_intent.succeeded", {
         "id": "pi_test_1", "metadata": {"flizen_booking_id": booking_id},
@@ -326,6 +338,22 @@ def test_confirmation_refreshes_itinerary_from_duffel_order(app_and_client):
     itin = db._store[f"bookings/{booking_id}"]["itinerary"]
     assert itin["airline"] == "Duffel Airways"
     assert itin["slices"][0]["departing_at"] == "2026-12-10T08:15:00"
+
+    body = client.get(f"/api/bookings/{booking_id}/details").json()
+    stored_seg = body["itinerary"]["slices"][0]["segments"][0]
+    assert stored_seg["origin_name"] == "Toronto Pearson International Airport"
+    assert stored_seg["origin_terminal"] == "1"
+    assert stored_seg["travellers"] == [{
+        "passenger_index": 0, "cabin": "Economy", "seat": "12A",
+        "baggages": [{"type": "checked", "quantity": 1}],
+    }]
+    details = body["order_details"]
+    assert (details["base_amount"], details["tax_amount"]) == ("80.00", "20.00")
+    assert details["conditions"]["refund_before_departure"]["penalty_amount"] == "10.00"
+    assert details["airline_references"][0]["reference"] == "ABC123"
+    assert details["tickets"] == [{"passenger_index": 0, "number": "1252100000001"}]
+    assert body["duffel_order_id"] == "ord_1"
+    assert "born_on" not in json.dumps(body)
 
 
 # ─── Refunds ────────────────────────────────────────────────────────────────
@@ -417,3 +445,69 @@ def test_list_does_not_include_payment_subcollection_docs(app_and_client):
 
     body = client.get("/api/bookings").json()
     assert [b["booking_id"] for b in body["bookings"]] == [booking_id]
+
+def test_list_includes_stored_itinerary_for_trip_cards(app_and_client):
+    _app, client, duffel, db, _stripe = app_and_client
+    duffel.offer_data = _rich_offer()
+    new_id = client.post("/api/bookings/draft", json=DRAFT_BODY).json()["booking_id"]
+    legacy_id = _seed(db, flight_summary={"from_airport": "YYZ", "to_airport": "ORD"})
+
+    by_id = {b["booking_id"]: b for b in client.get("/api/bookings").json()["bookings"]}
+    slices = by_id[new_id]["itinerary"]["slices"]
+    assert [(s["departing_at"], s["arriving_at"]) for s in slices] == [
+        ("2026-12-10T08:00:00", "2026-12-10T09:30:00"),
+        ("2026-12-17T18:00:00", "2026-12-17T21:00:00"),
+    ]
+    assert slices[0]["segments"][0]["flight_number"] == "ZZ100"
+    assert by_id[legacy_id]["itinerary"] is None
+
+
+def test_airline_logo_falls_back_to_segment_carrier(app_and_client):
+    _app, client, duffel, db, _stripe = app_and_client
+    offer = _rich_offer(owner={"name": "Iberia"})
+    offer["slices"][0]["segments"][0]["operating_carrier"]["logo_symbol_url"] = "https://assets.duffel.com/ib.svg"
+    duffel.offer_data = offer
+
+    booking_id = client.post("/api/bookings/draft", json=DRAFT_BODY).json()["booking_id"]
+    stored = db._store[f"bookings/{booking_id}"]
+    assert stored["flight_summary"]["airline_logo_url"].endswith("ib.svg")
+    assert stored["itinerary"]["airline_logo_url"].endswith("ib.svg")
+
+
+def test_backfill_adds_itinerary_to_legacy_bookings_only(app_and_client):
+    import asyncio
+    from scripts.backfill_itineraries import backfill
+
+    _app, _client, _duffel, db, _stripe = app_and_client
+    legacy = _seed(db, status=STATUS_CONFIRMED, duffel_order_id="ord_1",
+                   flight_summary={"from_airport": "YYZ", "airline": "Duffel Airways"})
+    gone = _seed(db, offer_id="off_gone", flight_summary={"from_airport": "YYZ"})
+    expired = _seed(db, offer_id="off_expired", flight_summary={"from_airport": "YYZ", "airline": "Iberia "})
+    complete = _seed(db, itinerary={"airline": "X", "version": 2, "slices": [{"origin": "AAA"}]},
+                     order_details={"currency": "USD"})
+    logos = {"iberia": "https://assets.duffel.com/ib.svg"}
+    requested = []
+
+    async def fetch(kind, resource_id):
+        requested.append((kind, resource_id))
+        return _rich_offer() if resource_id == "ord_1" else None
+
+    dry = asyncio.run(backfill(db, fetch, apply=False, logos_by_name=logos))
+    assert dry == {"updated": 1, "logo_only": 1, "unavailable": 1, "skipped": 1}
+    assert "itinerary" not in db._store[f"bookings/{legacy}"]
+
+    asyncio.run(backfill(db, fetch, apply=True, logos_by_name=logos))
+    doc = db._store[f"bookings/{legacy}"]
+    assert doc["itinerary"]["slices"][0]["departing_at"] == "2026-12-10T08:00:00"
+    assert doc["flight_summary"] == {
+        "from_airport": "YYZ", "airline": "Duffel Airways",
+        "airline_logo_url": "https://assets.duffel.com/zz.svg",
+    }
+    assert doc["status"] == STATUS_CONFIRMED
+    assert "itinerary" not in db._store[f"bookings/{gone}"]
+    assert db._store[f"bookings/{gone}"]["flight_summary"] == {"from_airport": "YYZ"}
+    expired_doc = db._store[f"bookings/{expired}"]
+    assert expired_doc["flight_summary"]["airline_logo_url"] == "https://assets.duffel.com/ib.svg"
+    assert "itinerary" not in expired_doc
+    assert db._store[f"bookings/{complete}"]["itinerary"]["slices"] == [{"origin": "AAA"}]
+    assert ("order", "ord_1") in requested

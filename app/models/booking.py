@@ -161,56 +161,43 @@ class FlightSummary(BaseModel):
     airline_logo_url: Optional[str] = None
 
 
-class BookingSummary(BaseModel):
-    """Response shape for GET /api/bookings and GET /api/bookings/{id}.
+# Flight schedule stored on the booking. Times are airport-local as returned
+# by Duffel (no UTC offset); display-only, no passenger data or prices.
 
-    Deliberately excludes: payment_intent_id, stripe_charge_id, payment
-    amount in minor units, passenger PII (names, DOB, passport), contact
-    details, offer_id, and seat preferences.
-    """
-    booking_id: str
-    status: str
-    amount: str
-    currency: str
-    slice_count: int = 0
-    passenger_count: int = 0
-    # High-level lifecycle signals — safe to expose.
-    payment_status: Optional[str] = None
-    refund_state:   Optional[str] = None
-    failure_reason: Optional[str] = None
-    # Populated ONLY when Duffel has confirmed the order.
-    duffel_booking_reference: Optional[str] = None
-    flight_summary: Optional[FlightSummary] = None
-    created_at:    Optional[str] = None
-    updated_at:    Optional[str] = None
-    confirmed_at:  Optional[str] = None
-    offer_expires_at: Optional[str] = None
+class SegmentBaggage(BaseModel):
+    type:     Optional[str] = None   # "checked" | "carry_on" (as returned by Duffel)
+    quantity: int = 0
 
 
-class BookingsListResponse(BaseModel):
-    bookings: list[BookingSummary]
-    count: int
+class SegmentPassenger(BaseModel):
+    passenger_index: int
+    cabin:    Optional[str] = None
+    seat:     Optional[str] = None   # only when booked with the airline
+    baggages: List[SegmentBaggage] = Field(default_factory=list)
 
-
-# ─── Trip details (GET /api/bookings/{id}/details) ──────────────────────────
-# Owner-only view used by My Trips. Adds the itinerary, traveller names, and
-# payment history on top of the summary. Still excludes Stripe/Duffel ids,
-# client secrets, dates of birth, passport data, phone numbers, and seat ids.
 
 class ItinerarySegment(BaseModel):
     origin:            Optional[str] = None
     origin_city:       Optional[str] = None
+    origin_name:       Optional[str] = None
+    origin_terminal:   Optional[str] = None
+    origin_time_zone:  Optional[str] = None
     destination:       Optional[str] = None
     destination_city:  Optional[str] = None
+    destination_name:  Optional[str] = None
+    destination_terminal:  Optional[str] = None
+    destination_time_zone: Optional[str] = None
     departing_at:      Optional[str] = None
     arriving_at:       Optional[str] = None
     duration:          Optional[str] = None
     airline:           Optional[str] = None
     airline_code:      Optional[str] = None
+    airline_logo_url:  Optional[str] = None
     flight_number:     Optional[str] = None
     operating_airline: Optional[str] = None
     aircraft:          Optional[str] = None
     cabin:             Optional[str] = None
+    travellers:        List[SegmentPassenger] = Field(default_factory=list)
 
 
 class ItinerarySlice(BaseModel):
@@ -232,6 +219,45 @@ class Itinerary(BaseModel):
     slices:           List[ItinerarySlice] = Field(default_factory=list)
 
 
+class BookingSummary(BaseModel):
+    """Response shape for GET /api/bookings and GET /api/bookings/{id}.
+
+    Deliberately excludes: payment_intent_id, stripe_charge_id, payment
+    amount in minor units, passenger PII (names, DOB, passport), contact
+    details, offer_id, and seat preferences.
+    """
+    booking_id: str
+    status: str
+    amount: str
+    currency: str
+    slice_count: int = 0
+    passenger_count: int = 0
+    # High-level lifecycle signals — safe to expose.
+    payment_status: Optional[str] = None
+    refund_state:   Optional[str] = None
+    failure_reason: Optional[str] = None
+    # Populated ONLY when Duffel has confirmed the order.
+    duffel_booking_reference: Optional[str] = None
+    flight_summary: Optional[FlightSummary] = None
+    # Null for bookings created before itineraries were stored.
+    itinerary:     Optional[Itinerary] = None
+    created_at:    Optional[str] = None
+    updated_at:    Optional[str] = None
+    confirmed_at:  Optional[str] = None
+    offer_expires_at: Optional[str] = None
+
+
+class BookingsListResponse(BaseModel):
+    bookings: list[BookingSummary]
+    count: int
+
+
+# ─── Trip details (GET /api/bookings/{id}/details) ──────────────────────────
+# Owner-only view used by My Trips. Adds traveller names, payment history,
+# Duffel fare details, and the Duffel order id on top of the summary. Still
+# excludes Stripe ids, client secrets, dates of birth, passport data, phone
+# numbers, and seat ids.
+
 class TravellerSummary(BaseModel):
     given_name:  str = ""
     family_name: str = ""
@@ -252,9 +278,54 @@ class PaymentRecordSummary(BaseModel):
     refunded_at:     Optional[str] = None
 
 
+class FareCondition(BaseModel):
+    allowed:          bool = False
+    penalty_amount:   Optional[str] = None
+    penalty_currency: Optional[str] = None
+
+
+class FareConditions(BaseModel):
+    refund_before_departure: Optional[FareCondition] = None
+    change_before_departure: Optional[FareCondition] = None
+
+
+class OrderService(BaseModel):
+    type:     Optional[str] = None   # "seat" | "baggage" | ...
+    quantity: int = 1
+    amount:   Optional[str] = None
+    currency: Optional[str] = None
+
+
+class AirlineReference(BaseModel):
+    reference:        Optional[str] = None
+    airline:          Optional[str] = None
+    airline_code:     Optional[str] = None
+    airline_logo_url: Optional[str] = None
+    conditions_of_carriage_url: Optional[str] = None
+
+
+class TicketSummary(BaseModel):
+    passenger_index: int
+    number:          Optional[str] = None
+
+
+class OrderDetails(BaseModel):
+    """Duffel fare breakdown, extras, conditions, references, and tickets (owner-only)."""
+    base_amount:  Optional[str] = None
+    tax_amount:   Optional[str] = None
+    total_amount: Optional[str] = None
+    currency:     Optional[str] = None
+    services:     List[OrderService] = Field(default_factory=list)
+    conditions:   Optional[FareConditions] = None
+    airline_references: List[AirlineReference] = Field(default_factory=list)
+    tickets:      List[TicketSummary] = Field(default_factory=list)
+
+
 class BookingDetails(BookingSummary):
-    itinerary:            Optional[Itinerary] = None
     travellers:           List[TravellerSummary] = Field(default_factory=list)
+    order_details:        Optional[OrderDetails] = None
+    # Shown to the owner in the "Additional information" section of Trip Details.
+    duffel_order_id:      Optional[str] = None
     contact_email:        Optional[str] = None
     payments:             List[PaymentRecordSummary] = Field(default_factory=list)
     payment_received_at:  Optional[str] = None
