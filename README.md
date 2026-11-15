@@ -34,13 +34,15 @@ app/
     booking_records.py     # Payment records: bookings/{id}/payments/{payment_intent_id}
     duffel_service.py      # Duffel offers / orders integration
     fulfillment_service.py # Stripe webhook -> Duffel order -> refund on failure
-    itinerary.py           # Duffel offer/order -> stored itinerary (slices, segments)
+    itinerary.py           # Duffel offer/order -> stored itinerary + order details (fare, refs, tickets)
     stripe_service.py      # Stripe PaymentIntents, refunds, webhook verification
   data/
     airports.json          # Airport database used by airport_service
     airports.csv           # Source CSV (not loaded at runtime)
 docs/
   FIRESTORE.md             # Firestore data model, status flow, duplicate protection
+scripts/
+  backfill_itineraries.py  # One-off: add itineraries, fare details, logos to older bookings from Duffel
 tests/                     # pytest suite (bookings, payments, webhook, round trip, trips)
 logs/                      # Log output directory (auto-created)
 firebase.json              # Firebase CLI config (Firestore rules + indexes)
@@ -142,9 +144,9 @@ stripe trigger charge.refunded
 | GET    | `/profile`                   | Yes  | Fetch the signed-in user's profile                              |
 | PUT    | `/profile`                   | Yes  | Save the signed-in user's profile                               |
 | POST   | `/api/bookings/draft`        | Yes  | Create a booking draft from one Duffel offer                    |
-| GET    | `/api/bookings`              | Yes  | List the user's bookings (newest first, up to 200)              |
+| GET    | `/api/bookings`              | Yes  | List the user's bookings with their itineraries (newest first, up to 200) |
 | GET    | `/api/bookings/{booking_id}` | Yes  | Booking summary (used for live status polling)                  |
-| GET    | `/api/bookings/{booking_id}/details` | Yes | Trip details for My Trips: itinerary, traveller names, payment history |
+| GET    | `/api/bookings/{booking_id}/details` | Yes | Trip details for My Trips: itinerary, seats & baggage, fare details, airline references, traveller names, payment history |
 | POST   | `/api/payments/intents`      | Yes  | Create or reuse a Stripe PaymentIntent for a draft              |
 | POST   | `/api/payments/webhook`      | Stripe signature | Stripe webhook (signature-verified, idempotent)     |
 

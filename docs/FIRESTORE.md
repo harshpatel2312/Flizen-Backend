@@ -31,6 +31,7 @@ and the Stripe webhook. `bookingId` is a UUID.
 | `contact` | map | draft | email, phone (E.164) |
 | `flight_summary` | map | draft | route, airline, dates, logo: used by list views |
 | `itinerary` | map | draft, refreshed on confirm | slices -> segments (see below) |
+| `order_details` | map | draft, refreshed on confirm | fare breakdown, paid extras, fare conditions, airline references, e-tickets (see below) |
 | `seat_preferences[]` | map | draft | local UI picks, `confirmed_with_duffel: false` |
 | `draft_fingerprint` | string | draft | hash of the checkout; reuses an identical open draft |
 | `payment_intent_id`, `payment_status`, `payment_amount_minor`, `payment_currency` | | intents | latest PaymentIntent |
@@ -42,15 +43,51 @@ and the Stripe webhook. `bookingId` is a UUID.
 `itinerary`:
 
 ```
-{ airline, airline_logo_url,
+{ version, airline, airline_logo_url,
   slices: [ { origin, origin_city, destination, destination_city,
               departing_at, arriving_at, duration, stops, fare_brand,
-              segments: [ { origin, origin_city, destination, destination_city,
+              segments: [ { origin, origin_city, origin_name, origin_terminal, origin_time_zone,
+                            destination, destination_city, destination_name,
+                            destination_terminal, destination_time_zone,
                             departing_at, arriving_at, duration, airline, airline_code,
-                            flight_number, operating_airline, aircraft, cabin } ] } ] }
+                            airline_logo_url, flight_number, operating_airline, aircraft, cabin,
+                            travellers: [ { passenger_index, cabin, seat,
+                                            baggages: [ { type, quantity } ] } ] } ] } ] }
 ```
 
 Times are the airports' local times as returned by Duffel; durations are ISO-8601.
+`airline_logo_url` (here and in `flight_summary`) is the selling airline's logo,
+falling back to the first segment's carrier logo. `travellers[].passenger_index`
+points into the booking's `passengers[]` (same order as the Duffel offer), so no
+names or other passenger data are copied; `seat` is set only when the airline
+has assigned one. `version` is bumped when fields are added.
+
+`order_details` (from the offer at draft time, replaced by the order on confirm):
+
+```
+{ base_amount, tax_amount, total_amount, currency,          # base/tax only if same currency
+  services: [ { type, quantity, amount, currency } ],        # paid seats/bags (orders only)
+  conditions: { refund_before_departure, change_before_departure:
+                { allowed, penalty_amount, penalty_currency } },
+  airline_references: [ { reference, airline, airline_code, airline_logo_url,
+                          conditions_of_carriage_url } ],   # orders only
+  tickets: [ { passenger_index, number } ] }                 # e-tickets, orders only
+```
+
+My Trips shows the fare breakdown only when it adds up exactly to the booking
+`amount` that was charged. `GET /api/bookings/{id}/details` returns
+`order_details` and `duffel_order_id` to the booking owner; the list endpoint
+does not.
+
+`GET /api/bookings` returns the stored itinerary with each booking so My Trips can
+show flight times; it is `null` for bookings created before itineraries were
+stored. To fill those in from Duffel (order if confirmed, otherwise the offer;
+unavailable ones are left as they are):
+
+```bash
+python -m scripts.backfill_itineraries          # dry run: lists what would change
+python -m scripts.backfill_itineraries --apply  # write itinerary, order_details, missing logo
+```
 
 ### Status flow
 

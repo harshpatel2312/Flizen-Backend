@@ -30,7 +30,7 @@ from app.services.duffel_service import (
     DuffelOfferNotFoundError,
     DuffelServiceError,
 )
-from app.services.itinerary import extract_itinerary
+from app.services.itinerary import extract_itinerary, extract_order_details
 from app.services.stripe_service import StripeServiceError
 
 logger = get_logger(__name__)
@@ -293,6 +293,9 @@ async def _handle_pi_succeeded(db, booking, booking_ref, obj, duffel_svc, stripe
     order_itinerary = extract_itinerary(order)
     if order_itinerary:
         confirmed["itinerary"] = order_itinerary
+    order_details = extract_order_details(order)
+    if order_details:
+        confirmed["order_details"] = order_details
     booking_ref.set(confirmed, merge=True)
     logger.info(
         "Booking confirmed booking_id=%s duffel_order_id=%s",

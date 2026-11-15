@@ -79,7 +79,7 @@ def test_list_orders_newest_first(app_and_client):
 _ALLOWED_KEYS = {
     "booking_id", "status", "amount", "currency", "slice_count",
     "passenger_count", "payment_status", "refund_state", "failure_reason",
-    "duffel_booking_reference", "flight_summary", "created_at",
+    "duffel_booking_reference", "flight_summary", "itinerary", "created_at",
     "updated_at", "confirmed_at", "offer_expires_at",
 }
 

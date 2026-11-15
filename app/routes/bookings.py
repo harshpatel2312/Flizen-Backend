@@ -31,6 +31,7 @@ from app.models.booking import (
     BookingsListResponse,
     FlightSummary,
     Itinerary,
+    OrderDetails,
     PaymentRecordSummary,
     TravellerSummary,
 )
@@ -40,7 +41,7 @@ from app.services.duffel_service import (
     DuffelService,
     DuffelServiceError,
 )
-from app.services.itinerary import extract_itinerary
+from app.services.itinerary import airline_logo_url, extract_itinerary, extract_order_details
 from app.services.stripe_service import from_stripe_minor_units
 
 logger = get_logger(__name__)
@@ -91,14 +92,13 @@ def _extract_flight_summary(offer: dict) -> dict:
             return {"origin": origin, "destination": dest, "airline": airline, "date": dep_date}
 
         out = _slice_display(slices[0]) or {}
-        owner = offer.get("owner") or {}
         summary = {
             "from_airport":   out.get("origin"),
             "to_airport":     out.get("destination"),
             "airline":        out.get("airline"),
             "departure_date": out.get("date"),
             "is_round_trip":  len(slices) > 1,
-            "airline_logo_url": owner.get("logo_symbol_url") if isinstance(owner, dict) else None,
+            "airline_logo_url": airline_logo_url(offer),
         }
         if len(slices) > 1:
             ret = _slice_display(slices[1]) or {}
@@ -108,6 +108,26 @@ def _extract_flight_summary(offer: dict) -> dict:
         return summary
     except Exception:
         return {}
+
+
+def _parse_itinerary(data: dict) -> Optional[Itinerary]:
+    raw = data.get("itinerary")
+    if not isinstance(raw, dict) or not raw.get("slices"):
+        return None
+    try:
+        return Itinerary(**raw)
+    except Exception:
+        return None
+
+
+def _parse_order_details(data: dict) -> Optional[OrderDetails]:
+    raw = data.get("order_details")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    try:
+        return OrderDetails(**raw)
+    except Exception:
+        return None
 
 
 def _to_summary(data: dict) -> BookingSummary:
@@ -132,6 +152,7 @@ def _to_summary(data: dict) -> BookingSummary:
             data.get("duffel_booking_reference") if status == "confirmed" else None
         ),
         flight_summary  = FlightSummary(**fs_raw) if isinstance(fs_raw, dict) else None,
+        itinerary       = _parse_itinerary(data),
         created_at      = data.get("created_at"),
         updated_at      = data.get("updated_at"),
         confirmed_at    = data.get("confirmed_at"),
@@ -158,14 +179,6 @@ def _to_payment_summary(record: dict, booking_currency: Optional[str] = None) ->
 
 def _to_details(data: dict, payments: list[dict]) -> BookingDetails:
     """Owner-only trip view. Traveller names only — no DOB, passport, or phone."""
-    itinerary = None
-    raw_itinerary = data.get("itinerary")
-    if isinstance(raw_itinerary, dict) and raw_itinerary.get("slices"):
-        try:
-            itinerary = Itinerary(**raw_itinerary)
-        except Exception:
-            itinerary = None
-
     travellers = [
         TravellerSummary(
             given_name  = str(p.get("given_name") or ""),
@@ -178,8 +191,9 @@ def _to_details(data: dict, payments: list[dict]) -> BookingDetails:
 
     return BookingDetails(
         **_to_summary(data).model_dump(),
-        itinerary           = itinerary,
         travellers          = travellers,
+        order_details       = _parse_order_details(data),
+        duffel_order_id     = data.get("duffel_order_id"),
         contact_email       = (data.get("contact") or {}).get("email"),
         payments            = [_to_payment_summary(p, data.get("currency")) for p in payments],
         payment_received_at = data.get("payment_received_at"),
@@ -379,6 +393,8 @@ async def create_booking_draft(
         "flight_summary": _extract_flight_summary(offer),
         # Full itinerary for My Trips; refreshed from the Duffel order on confirm.
         "itinerary": extract_itinerary(offer),
+        # Fare breakdown and conditions; references and tickets are added on confirm.
+        "order_details": extract_order_details(offer),
         "draft_fingerprint": fingerprint,
         # Local UI seat picks. Explicitly flagged as NOT confirmed with Duffel.
         "seat_preferences": [
